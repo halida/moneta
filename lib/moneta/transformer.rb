@@ -57,17 +57,7 @@ module Moneta
           end
         end_eval
 
-        key, key_opts = compile_transformer(keys, 'key')
-        dump, dump_opts = compile_transformer(values, 'value')
-        load, load_opts = compile_transformer(values.reverse, 'value', 1)
-
-        if values.empty?
-          compile_key_transformer(klass, key, key_opts)
-        elsif keys.empty?
-          compile_value_transformer(klass, load, load_opts, dump, dump_opts)
-        else
-          compile_key_value_transformer(klass, key, key_opts, load, load_opts, dump, dump_opts)
-        end
+        compile_key_value_transformer(klass, keys, values)
 
         klass
       end
@@ -77,71 +67,69 @@ module Moneta
         options.empty? ? 'options' : "Utils.without(options, #{options.map(&:to_sym).map(&:inspect).join(', ')})"
       end
 
-      def compile_key_transformer(klass, key, key_opts)
+      def compile_key_value_transformer(klass, keys, values)
+        key, key_opts = compile_transformer(keys, 'key')
+        key_load, key_load_opts = compile_transformer(keys.reverse, 'key', 1)
+        dump, dump_opts = compile_transformer(values, 'value')
+        load, load_opts = compile_transformer(values.reverse, 'value', 1)
+
+        dump = "(options[:raw] ? value : #{dump})"
+        load = "(value && !options[:raw] ? #{load} : value)"
+        load_opts << :raw
+        dump_opts << :raw
+
+        all_opts = [key_opts, key_load_opts, dump_opts, load_opts]
+
         klass.class_eval <<-end_eval, __FILE__, __LINE__
           def key?(key, options = {})
-            @adapter.key?(#{key}, #{without key_opts})
+            @adapter.key?(#{key}, #{without key_opts, key_load_opts})
           end
           def increment(key, amount = 1, options = {})
-            @adapter.increment(#{key}, amount, #{without key_opts})
+            @adapter.increment(#{key}, amount, #{without key_opts, key_load_opts})
           end
           def load(key, options = {})
-            @adapter.load(#{key}, #{without :raw, key_opts})
+            value = @adapter.load(#{key}, #{without key_opts, key_load_opts, load_opts})
+            #{load}
           end
           def store(key, value, options = {})
-            @adapter.store(#{key}, value, #{without :raw, key_opts})
-          end
-          def delete(key, options = {})
-            @adapter.delete(#{key}, #{without :raw, key_opts})
-          end
-          def create(key, value, options = {})
-            @adapter.create(#{key}, value, #{without :raw, key_opts})
-          end
-        end_eval
-      end
-
-      def compile_value_transformer(klass, load, load_opts, dump, dump_opts)
-        klass.class_eval <<-end_eval, __FILE__, __LINE__
-          def load(key, options = {})
-            value = @adapter.load(key, #{without :raw, load_opts})
-            value && !options[:raw] ? #{load} : value
-          end
-          def store(key, value, options = {})
-            @adapter.store(key, options[:raw] ? value : #{dump}, #{without :raw, dump_opts})
+            @adapter.store(#{key}, #{dump}, #{without key_opts, key_load_opts, dump_opts})
             value
           end
           def delete(key, options = {})
-            value = @adapter.delete(key, #{without :raw, load_opts})
-            value && !options[:raw] ? #{load} : value
+            value = @adapter.delete(#{key}, #{without key_opts, key_load_opts, load_opts})
+            #{load}
           end
           def create(key, value, options = {})
-            @adapter.create(key, options[:raw] ? value : #{dump}, #{without :raw, dump_opts})
+            @adapter.create(#{key}, #{dump}, #{without key_opts, key_load_opts, dump_opts})
           end
-        end_eval
-      end
-
-      def compile_key_value_transformer(klass, key, key_opts, load, load_opts, dump, dump_opts)
-        klass.class_eval <<-end_eval, __FILE__, __LINE__
-          def key?(key, options = {})
-            @adapter.key?(#{key}, #{without key_opts})
+          def each_keys(options = {})
+            return to_enum(:each_keys) unless block_given?
+            @adapter.each_keys(#{without key_opts, dump_opts, load_opts}) do |key|
+              yield(#{key_load})
+            end
           end
-          def increment(key, amount = 1, options = {})
-            @adapter.increment(#{key}, amount, #{without key_opts})
+          def each_values(options = {})
+            return to_enum(:each_values) unless block_given?
+            @adapter.each_values(#{without key_opts, key_load_opts, dump_opts}) do |value|
+              yield(#{load})
+            end
           end
-          def load(key, options = {})
-            value = @adapter.load(#{key}, #{without :raw, key_opts, load_opts})
-            value && !options[:raw] ? #{load} : value
+          def keys(options = {})
+            self.each_keys(options).to_a
           end
-          def store(key, value, options = {})
-            @adapter.store(#{key}, options[:raw] ? value : #{dump}, #{without :raw, key_opts, dump_opts})
-            value
+          def values(options = {})
+            self.each_values(options).to_a
           end
-          def delete(key, options = {})
-            value = @adapter.delete(#{key}, #{without :raw, key_opts, load_opts})
-            value && !options[:raw] ? #{load} : value
+          def each(options = {})
+            return to_enum(:each) unless block_given?
+            @adapter.each(#{without key_opts, dump_opts}) do |key, value|
+              key = (#{key_load})
+              value = (#{load})
+              yield([key, value])
+            end
           end
-          def create(key, value, options = {})
-            @adapter.create(#{key}, options[:raw] ? value : #{dump}, #{without :raw, key_opts, dump_opts})
+          def all(options = {})
+            self.each(options).to_a
           end
         end_eval
       end
@@ -169,9 +157,10 @@ module Moneta
           raise ArgumentError, "Unknown transformer #{name}" unless t = TRANSFORMER[name]
           require t[3] if t[3]
           code = t[i]
+          raise ArgumentError, "Transformer #{name} don't have code #{i} : #{t}" unless code.present?
           options += code.scan(/options\[:(\w+)\]/).flatten
           value =
-            if t[0] == :serialize && var == 'key'
+            if t[0] == :serialize && var == 'key' && i == 2
               "(tmp = #{value}; String === tmp ? tmp : #{code % 'tmp'})"
             else
               code % value

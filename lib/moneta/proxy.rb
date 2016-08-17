@@ -89,5 +89,34 @@ module Moneta
     def features
       @features ||= (self.class.features + adapter.features).uniq.freeze
     end
+
+    def count(options = {})
+      adapter.count(options)
+    end
+
+    def each_keys(options = {})
+      adapter.each_keys(options)
+    end
+
+    def each_values(options = {})
+      adapter.each_values(options)
+    end
+
+    def keys(options = {})
+      adapter.each_keys(options).to_a
+    end
+
+    def values(options = {})
+      adapter.each_values(options).to_a
+    end
+
+    def each(options = {}, &block)
+      adapter.each(options, &block)
+    end
+
+    def all(options = {})
+      adapter.each(options).to_a
+    end
+    
   end
 end

@@ -17,7 +17,7 @@ module Moneta
       # @option options [Fixnum] :busy_timeout (1000) Sqlite timeout if database is busy
       # @option options [::Sqlite3::Database] :backend Use existing backend instance
       def initialize(options = {})
-        table = options[:table] || 'moneta'
+        @table = table = options[:table] || 'moneta'
         @backend = options[:backend] ||
           begin
             raise ArgumentError, 'Option :file is required' unless options[:file]
@@ -31,7 +31,12 @@ module Moneta
            @replace = @backend.prepare("replace into #{table} values (?, ?)"),
            @delete  = @backend.prepare("delete from #{table} where k = ?"),
            @clear   = @backend.prepare("delete from #{table}"),
-           @create  = @backend.prepare("insert into #{table} values (?, ?)")]
+           @create  = @backend.prepare("insert into #{table} values (?, ?)"),
+           @count   = @backend.prepare("select count(*) from #{table}"),
+           @keys    = @backend.prepare("select k from #{table}"),
+           @values  = @backend.prepare("select v from #{table}"),
+           @each    = @backend.prepare("select k,v from #{table}"),
+          ]
       end
 
       # (see Proxy#key?)
@@ -86,6 +91,32 @@ module Moneta
         @backend.close
         nil
       end
+
+      def count(options = {})
+        @count.execute!.first.first
+      end
+
+      def each_keys(options = {})
+        return to_enum(:each_keys) unless block_given?
+        @keys.execute!.each do |row|
+          yield row.first
+        end
+      end
+
+      def each_values(options = {})
+        return to_enum(:each_values) unless block_given?
+        @values.execute!.each do |row|
+          yield row.first
+        end
+      end
+
+      def each(options = {})
+        return to_enum(:each) unless block_given?
+        @each.execute!.each do |row|
+          yield row
+        end
+      end
+
     end
   end
 end
